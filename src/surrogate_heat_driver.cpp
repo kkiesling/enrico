@@ -37,6 +37,19 @@ SurrogateHeatDriver::SurrogateHeatDriver(MPI_Comm comm, pugi::xml_node node)
   n_fluid_ = n_pins_ * n_axial_;
   pin_pitch_ = node.child("pin_pitch").text().as_double();
 
+  // Determine assembly information
+  if (node.child("n_assem_x") || node.child("n_assem_y") || node.child("assem_pitch")) {
+    n_assem_x_ = node.child("n_assem_x").text().as_int();
+    n_assem_y_ = node.child("n_assem_y").text().as_int();
+    assem_pitch_ = node.child("assem_pitch").text().as_double();
+  } else {
+    // assume 1 assembly, with pitch corresponding to the larger pin dimension
+    n_assem_x_ = 1;
+    n_assem_y_ = 1;
+    assem_pitch_ = pin_pitch_ * std::max(n_pins_x_, n_pins_y_);
+  }
+  n_assem_ = n_assem_x_ * n_assem_y_;
+
   // Determine thermal-hydraulic parameters for fluid phase
   inlet_temperature_ = node.child("inlet_temperature").text().as_double();
   mass_flowrate_ = node.child("mass_flowrate").text().as_double();
@@ -82,6 +95,9 @@ SurrogateHeatDriver::SurrogateHeatDriver(MPI_Comm comm, pugi::xml_node node)
   Expects(subchannel_tol_h_ > 0.0);
   Expects(subchannel_tol_p_ > 0.0);
   Expects(heat_tol_ > 0.0);
+  Expects(n_assem_x_ > 0);
+  Expects(n_assem_y_ > 0);
+  Expects(assem_pitch_ >= pin_pitch_ * std::max(n_pins_x_, n_pins_y_));
 
   // Set pin locations, where the center of the assembly is assumed to occur at
   // x = 0, y = 0. It is also assumed that the rod-boundary separation in the

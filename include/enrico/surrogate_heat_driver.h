@@ -259,6 +259,7 @@ public:
 
   //! Total number of pins
   std::size_t n_pins_;
+  std::size_t n_assem_;
 
   // Dimensions for a single fuel pin axial segment
   double clad_outer_radius_;     //!< clad outer radius in [cm]
@@ -368,6 +369,15 @@ private:
 
   //! Pin pitch, assumed the same for the x and y directions
   double pin_pitch_;
+
+  //! Number of assemblies in the x-direction in a Cartesian grid
+  std::size_t n_assem_x_;
+
+  //! Number of assemblies in the y-direction in a Cartesian grid
+  std::size_t n_assem_y_;
+
+  //! Assembly pitch, assumed the same for the x and y directions
+  double assem_pitch_;
 
   //! Inlet fluid temperature [K]
   double inlet_temperature_;
