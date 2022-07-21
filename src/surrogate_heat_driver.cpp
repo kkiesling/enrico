@@ -32,13 +32,13 @@ SurrogateHeatDriver::SurrogateHeatDriver(MPI_Comm comm, pugi::xml_node node)
   n_clad_rings_ = node.child("clad_rings").text().as_int();
   n_pins_x_ = node.child("n_pins_x").text().as_int();
   n_pins_y_ = node.child("n_pins_y").text().as_int();
-  n_pins_ = n_pins_x_ * n_pins_y_;
+  n_pins_ = n_pins_x_ * n_pins_y_;  // per assembly
   n_solid_ = n_pins_ * n_axial_ * n_rings() * n_azimuthal_;
   n_fluid_ = n_pins_ * n_axial_;
   pin_pitch_ = node.child("pin_pitch").text().as_double();
 
   // Determine assembly information
-  if (node.child("n_assem_x") || node.child("n_assem_y") || node.child("assem_pitch")) {
+  if (node.child("n_assem_x") || node.child("n_assem_y")) {
     n_assem_x_ = node.child("n_assem_x").text().as_int();
     n_assem_y_ = node.child("n_assem_y").text().as_int();
     assembly_width_x_ = node.child("assembly_width_x").text().as_double();
@@ -105,7 +105,6 @@ SurrogateHeatDriver::SurrogateHeatDriver(MPI_Comm comm, pugi::xml_node node)
   // Set pin locations, where the center of the assembly is assumed to occur at
   // x = 0, y = 0. It is also assumed that the rod-boundary separation in the
   // x and y directions is the same and equal to half the pitch.
-  // TODO: generalize to multi-assembly simulations
   double core_width_x = assembly_width_x_ * n_assem_x_;
   double core_width_y = assembly_width_y_* n_assem_y_;
   double core_top_left_x = -core_width_x / 2.0;
@@ -115,8 +114,8 @@ SurrogateHeatDriver::SurrogateHeatDriver(MPI_Comm comm, pugi::xml_node node)
   for (gsl::index arow = 0; arow < n_assem_y_; ++arow){
     for (gsl::index acol = 0; acol < n_assem_x_; ++acol) {
       int assem_index = arow * n_assem_x_ + acol;
-      double assem_top_left_x = -core_top_left_x + acol * assembly_width_x_;
-      double assem_top_left_y = core_top_left_y + arow * assembly_width_y_;
+      double assem_top_left_x = core_top_left_x + acol * assembly_width_x_ + pin_pitch_ / 2.0;
+      double assem_top_left_y = core_top_left_y - arow * assembly_width_y_ - pin_pitch_ / 2.0;
       for (gsl::index row = 0; row < n_pins_y_; ++row) {
         for (gsl::index col = 0; col < n_pins_x_; ++col) {
           int pin_index = row * n_pins_x_ + col;
