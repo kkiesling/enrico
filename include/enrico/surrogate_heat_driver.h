@@ -252,7 +252,7 @@ public:
   double fluid_temperature(std::size_t pin, std::size_t axial) const;
 
   // Data on fuel pins
-  xt::xtensor<double, 2> pin_centers_; //!< (x,y) values for center of fuel pins
+  xt::xtensor<double, 3> pin_centers_; //!< (x,y) values for center of fuel pins
   xt::xtensor<double, 1> z_;           //!< Bounding z-values for axial segments
   std::size_t n_axial_;                //!< number of axial segments
   std::size_t n_azimuthal_{4};         //!< number of azimuthal segments
@@ -376,8 +376,9 @@ private:
   //! Number of assemblies in the y-direction in a Cartesian grid
   std::size_t n_assem_y_;
 
-  //! Assembly pitch, assumed the same for the x and y directions
-  double assem_pitch_;
+  //! Assembly dimensions
+  double assembly_width_x_;
+  double assembly_width_y_;
 
   //! Inlet fluid temperature [K]
   double inlet_temperature_;

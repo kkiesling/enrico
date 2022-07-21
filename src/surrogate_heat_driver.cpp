@@ -41,12 +41,14 @@ SurrogateHeatDriver::SurrogateHeatDriver(MPI_Comm comm, pugi::xml_node node)
   if (node.child("n_assem_x") || node.child("n_assem_y") || node.child("assem_pitch")) {
     n_assem_x_ = node.child("n_assem_x").text().as_int();
     n_assem_y_ = node.child("n_assem_y").text().as_int();
-    assem_pitch_ = node.child("assem_pitch").text().as_double();
+    assembly_width_x_ = node.child("assembly_width_x").text().as_double();
+    assembly_width_y_ = node.child("assembly_width_y").text().as_double();
   } else {
     // assume 1 assembly, with pitch corresponding to the larger pin dimension
     n_assem_x_ = 1;
     n_assem_y_ = 1;
-    assem_pitch_ = pin_pitch_ * std::max(n_pins_x_, n_pins_y_);
+    assembly_width_x_ = n_pins_x_ * pin_pitch_;
+    assembly_width_y_ = n_pins_y_ * pin_pitch_;
   }
   n_assem_ = n_assem_x_ * n_assem_y_;
 
@@ -97,23 +99,31 @@ SurrogateHeatDriver::SurrogateHeatDriver(MPI_Comm comm, pugi::xml_node node)
   Expects(heat_tol_ > 0.0);
   Expects(n_assem_x_ > 0);
   Expects(n_assem_y_ > 0);
-  Expects(assem_pitch_ >= pin_pitch_ * std::max(n_pins_x_, n_pins_y_));
+  Expects(assembly_width_x_ >= pin_pitch_ * n_pins_x_);
+  Expects(assembly_width_y_ >= pin_pitch_ * n_pins_y_);
 
   // Set pin locations, where the center of the assembly is assumed to occur at
   // x = 0, y = 0. It is also assumed that the rod-boundary separation in the
   // x and y directions is the same and equal to half the pitch.
   // TODO: generalize to multi-assembly simulations
-  double assembly_width_x = n_pins_x_ * pin_pitch_;
-  double assembly_width_y = n_pins_y_ * pin_pitch_;
-  double top_left_x = -assembly_width_x / 2.0 + pin_pitch_ / 2.0;
-  double top_left_y = assembly_width_y / 2.0 - pin_pitch_ / 2.0;
+  double core_width_x = assembly_width_x_ * n_assem_x_;
+  double core_width_y = assembly_width_y_* n_assem_y_;
+  double core_top_left_x = -core_width_x / 2.0;
+  double core_top_left_y =  core_width_y / 2.0;
 
-  pin_centers_.resize({n_pins_, 2});
-  for (gsl::index row = 0; row < n_pins_y_; ++row) {
-    for (gsl::index col = 0; col < n_pins_x_; ++col) {
-      int pin_index = row * n_pins_x_ + col;
-      pin_centers_(pin_index, 0) = top_left_x + col * pin_pitch_;
-      pin_centers_(pin_index, 1) = top_left_y - row * pin_pitch_;
+  pin_centers_.resize({n_assem_, n_pins_, 2});
+  for (gsl::index arow = 0; arow < n_assem_y_; ++arow){
+    for (gsl::index acol = 0; acol < n_assem_x_; ++acol) {
+      int assem_index = arow * n_assem_x_ + acol;
+      double assem_top_left_x = -core_top_left_x + acol * assembly_width_x_;
+      double assem_top_left_y = core_top_left_y + arow * assembly_width_y_;
+      for (gsl::index row = 0; row < n_pins_y_; ++row) {
+        for (gsl::index col = 0; col < n_pins_x_; ++col) {
+          int pin_index = row * n_pins_x_ + col;
+          pin_centers_(assem_index, pin_index, 0) = assem_top_left_x + col * pin_pitch_;
+          pin_centers_(assem_index, pin_index, 1) = assem_top_left_y - row * pin_pitch_;
+        }
+      }
     }
   }
 
@@ -253,8 +263,8 @@ std::vector<Position> SurrogateHeatDriver::centroid() const
   // coordinate for each region in the T/H model is obtained and used to
   // determine the OpenMC cell at that position.
   for (gsl::index i = 0; i < n_pins_; ++i) {
-    double x_center = pin_centers_(i, 0);
-    double y_center = pin_centers_(i, 1);
+    double x_center = pin_centers_(0, i, 0);
+    double y_center = pin_centers_(0, i, 1);
 
     for (gsl::index j = 0; j < n_axial_; ++j) {
       double zavg = 0.5 * (z_(j) + z_(j + 1));
@@ -287,8 +297,8 @@ std::vector<Position> SurrogateHeatDriver::centroid() const
   // sure that the T/H model is finer than the OpenMC model.
 
   for (gsl::index i = 0; i < n_pins_; ++i) {
-    double x_center = pin_centers_(i, 0);
-    double y_center = pin_centers_(i, 1);
+    double x_center = pin_centers_(0, i, 0);
+    double y_center = pin_centers_(0, i, 1);
 
     for (gsl::index j = 0; j < n_axial_; ++j) {
       double zavg = 0.5 * (z_(j) + z_(j + 1));
