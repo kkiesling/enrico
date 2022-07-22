@@ -243,13 +243,16 @@ public:
   void write_step(int timestep, int iteration) final;
 
   //! Returns solid temperature in [K] for given region
-  double solid_temperature(std::size_t pin, std::size_t axial, std::size_t ring) const;
+  double solid_temperature(std::size_t assem,
+                           std::size_t pin,
+                           std::size_t axial,
+                           std::size_t ring) const;
 
   //! Returns fluid density in [g/cm^3] for given region
-  double fluid_density(std::size_t pin, std::size_t axial) const;
+  double fluid_density(std::size_t assem, std::size_t pin, std::size_t axial) const;
 
   //! Returns fluid temperature in [K] for given region
-  double fluid_temperature(std::size_t pin, std::size_t axial) const;
+  double fluid_temperature(std::size_t assem, std::size_t pin, std::size_t axial) const;
 
   // Data on fuel pins
   xt::xtensor<double, 3> pin_centers_; //!< (x,y) values for center of fuel pins
@@ -268,19 +271,19 @@ public:
   std::size_t n_fuel_rings_{20}; //!< number of fuel rings
   std::size_t n_clad_rings_{2};  //!< number of clad rings
 
-  //!< Channels in the domain
-  std::vector<Channel> channels_;
+  //!< Channels in the domain - one vector of channels per assembly
+  std::vector<std::vector<Channel> > channels_;
 
-  //!< Rods in the domain
-  std::vector<Rod> rods_;
+  //!< Rods in the domain - one vector of rods per assembly
+  std::vector<std::vector<Rod>> rods_;
 
   //! Mass flowrate for coolant-centered channels; this is determine by distributing
   //! a total inlet mass flowrate among the channels based on the fractional flow area.
-  xt::xtensor<double, 1> channel_flowrates_;
+  xt::xtensor<double, 2> channel_flowrates_;
 
   // solver variables and settings
-  xt::xtensor<double, 4>
-    source_; //!< heat source for each (pin, axial segment, ring, azimuthal segment)
+  xt::xtensor<double, 5>
+    source_; //!< heat source for each (assembly, pin, axial segment, ring, azimuthal segment)
   xt::xtensor<double, 1> r_grid_clad_; //!< radii of each clad ring in [cm]
   xt::xtensor<double, 1> r_grid_fuel_; //!< radii of each fuel ring in [cm]
 
@@ -349,17 +352,17 @@ private:
                            const xt::xtensor<double, 2>& h,
                            const xt::xtensor<double, 2>& q) const;
 
-  //!< solid temperature in [K] for each (pin, axial segment, ring)
-  xt::xtensor<double, 3> solid_temperature_;
+  //!< solid temperature in [K] for each (assembly, pin, axial segment, ring)
+  xt::xtensor<double, 4> solid_temperature_;
 
   //! Flow areas for coolant-centered channels
   xt::xtensor<double, 1> channel_areas_;
 
-  //! Fluid temperature in a rod-centered basis indexed by rod ID and axial ID
-  xt::xtensor<double, 2> fluid_temperature_;
+  //! Fluid temperature in a rod-centered basis indexed by assembly, rod ID, and axial ID
+  xt::xtensor<double, 3> fluid_temperature_;
 
-  //! Fluid density in [g/cm^3] in a rod-centered basis indexed by rod ID and axial ID
-  xt::xtensor<double, 2> fluid_density_;
+  //! Fluid density in [g/cm^3] in a rod-centered basis indexed by assembly, rod ID, and axial ID
+  xt::xtensor<double, 3> fluid_density_;
 
   //! Number of pins in the x-direction in a Cartesian grid
   std::size_t n_pins_x_;

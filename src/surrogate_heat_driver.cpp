@@ -55,7 +55,7 @@ SurrogateHeatDriver::SurrogateHeatDriver(MPI_Comm comm, pugi::xml_node node)
   // Determine thermal-hydraulic parameters for fluid phase
   inlet_temperature_ = node.child("inlet_temperature").text().as_double();
   mass_flowrate_ = node.child("mass_flowrate").text().as_double();
-  n_channels_ = (n_pins_x_ + 1) * (n_pins_y_ + 1);
+  n_channels_ = (n_pins_x_ + 1) * (n_pins_y_ + 1) * n_assem_;
 
   // Determine solver parameters
   if (node.child("max_subchannel_its"))
@@ -126,53 +126,69 @@ SurrogateHeatDriver::SurrogateHeatDriver(MPI_Comm comm, pugi::xml_node node)
     }
   }
 
-  // Initialize the channels
+  // Initialize the channels - one vector of channels per assembly
   ChannelFactory channel_factory(pin_pitch_, clad_outer_radius_);
-
-  for (std::size_t row = 0; row < n_pins_y_ + 1; ++row) {
-    for (std::size_t col = 0; col < n_pins_x_ + 1; ++col) {
-      std::size_t a = col / n_pins_x_;
-      std::size_t b = row / n_pins_y_;
-
-      if ((row == 0 || row == n_pins_y_) && (col == 0 || col == n_pins_x_))
-        channels_.push_back(channel_factory.make_corner(
-          {a * (n_pins_x_ - 1) + b * n_pins_x_ * (n_pins_y_ - 1)}));
-      else if (row == 0)
-        channels_.push_back(channel_factory.make_edge({col - 1, col}));
-      else if (row == n_pins_y_)
-        channels_.push_back(channel_factory.make_edge(
-          {(row - 1) * n_pins_x_ + col - 1, (row - 1) * n_pins_x_ + col}));
-      else if (col == 0)
-        channels_.push_back(
-          channel_factory.make_edge({(row - 1) * n_pins_x_, row * n_pins_x_}));
-      else if (col == n_pins_x_)
-        channels_.push_back(
-          channel_factory.make_edge({row * n_pins_x_ - 1, (row + 1) * n_pins_x_ - 1}));
-      else {
-        std::size_t i = (row - 1) * n_pins_x_ + col - 1;
-        channels_.push_back(
-          channel_factory.make_interior({i, i + 1, i + n_pins_x_, i + n_pins_x_ + 1}));
+  for (gsl::index assem = 0; assem < n_assem_; ++assem) {
+    std::vector<Channel> assem_channels;
+    for (std::size_t row = 0; row < n_pins_y_ + 1; ++row) {
+      for (std::size_t col = 0; col < n_pins_x_ + 1; ++col) {
+        std::size_t a = col / n_pins_x_;
+        std::size_t b = row / n_pins_y_;
+        if ((row == 0 || row == n_pins_y_) && (col == 0 || col == n_pins_x_))
+          assem_channels.push_back(channel_factory.make_corner(
+            {a * (n_pins_x_ - 1) + b * n_pins_x_ * (n_pins_y_ - 1)}));
+        else if (row == 0)
+          assem_channels.push_back(channel_factory.make_edge({col - 1, col}));
+        else if (row == n_pins_y_)
+          assem_channels.push_back(channel_factory.make_edge(
+            {(row - 1) * n_pins_x_ + col - 1, (row - 1) * n_pins_x_ + col}));
+        else if (col == 0)
+          assem_channels.push_back(
+            channel_factory.make_edge({(row - 1) * n_pins_x_, row * n_pins_x_}));
+        else if (col == n_pins_x_)
+          assem_channels.push_back(
+            channel_factory.make_edge({row * n_pins_x_ - 1, (row + 1) * n_pins_x_ - 1}));
+        else {
+          std::size_t i = (row - 1) * n_pins_x_ + col - 1;
+          assem_channels.push_back(
+            channel_factory.make_interior({i, i + 1, i + n_pins_x_, i + n_pins_x_ + 1}));
+        }
       }
     }
+    channels_.push_back(assem_channels);
   }
 
-  // Initialize the rods
+  // Initialize the rods - one vector of rods per assembly
   RodFactory rod_factory(clad_outer_radius_, clad_inner_radius_, pellet_radius_);
-  for (gsl::index rod = 0; rod < n_pins_; ++rod) {
-    std::size_t row = rod / n_pins_x_;
-    std::size_t col = rod % n_pins_x_;
-    std::size_t a = n_pins_x_ + 1;
-    rods_.push_back(rod_factory.make_rod(
-      {row * a + col, row * a + col + 1, (row + 1) * a + col, (row + 1) * a + col + 1}));
+  for (gsl::index assem = 0; assem < n_assem_; ++assem) {
+    std::vector<Rod> assem_rods;
+    for (gsl::index rod = 0; rod < n_pins_; ++rod) {
+      std::size_t row = rod / n_pins_x_;
+      std::size_t col = rod % n_pins_x_;
+      std::size_t a = n_pins_x_ + 1;
+      assem_rods.push_back(rod_factory.make_rod({row * a + col,
+                                            row * a + col + 1,
+                                            (row + 1) * a + col,
+                                            (row + 1) * a + col + 1}));
+    }
+    rods_.push_back(assem_rods);
   }
 
-  double total_flow_area = 0.0;
-  for (const auto& c : channels_)
-    total_flow_area += c.area_;
+  std::vector<double> total_flow_area;
+  for (gsl::index assem = 0; assem < n_assem_; ++assem) {
+    double total_flow_area_assem = 0.0;
+    for (const auto& c : channels_[assem]) {
+      total_flow_area_assem += c.area_;
+    }
+    total_flow_area.push_back(total_flow_area_assem);
+  }
 
-  channel_flowrates_.resize({n_channels_});
-  for (gsl::index i = 0; i < n_channels_; ++i)
-    channel_flowrates_(i) = channels_[i].area_ / total_flow_area * mass_flowrate_;
+  channel_flowrates_.resize({n_assem_, n_channels_});
+  for (gsl::index assem = 0; assem < n_assem_; ++assem){
+    for (gsl::index i = 0; i < n_channels_; ++i) {
+      channel_flowrates_(assem, i) = channels_[assem][i].area_ / total_flow_area[assem] * mass_flowrate_;
+    }
+  }
 
   // Get z values
   z_ = openmc::get_node_xarray<double>(node, "z");
@@ -230,12 +246,12 @@ void SurrogateHeatDriver::generate_arrays()
 
   if (this->has_coupling_data()) {
     // Create empty arrays for source term and temperature in the solid phase
-    source_ = xt::empty<double>({n_pins_, n_axial_, n_rings(), n_azimuthal_});
-    solid_temperature_ = xt::empty<double>({n_pins_, n_axial_, n_rings()});
+    source_ = xt::empty<double>({n_assem_, n_pins_, n_axial_, n_rings(), n_azimuthal_});
+    solid_temperature_ = xt::empty<double>({n_assem_, n_pins_, n_axial_, n_rings()});
 
     // Create empty arrays for temperature and density in the fluid phase
-    fluid_temperature_ = xt::empty<double>({n_pins_, n_axial_});
-    fluid_density_ = xt::empty<double>({n_pins_, n_axial_});
+    fluid_temperature_ = xt::empty<double>({n_assem_, n_pins_, n_axial_});
+    fluid_density_ = xt::empty<double>({n_assem_, n_pins_, n_axial_});
   }
 }
 
@@ -246,8 +262,8 @@ int SurrogateHeatDriver::n_local_elem() const
 
 std::size_t SurrogateHeatDriver::n_global_elem() const
 {
-  auto n_solid = n_pins_ * n_axial_ * n_rings() * n_azimuthal_;
-  auto n_fluid = n_pins_ * n_axial_;
+  auto n_solid = n_pins_ * n_axial_ * n_rings() * n_azimuthal_ * n_assem_;
+  auto n_fluid = n_pins_ * n_axial_ * n_assem_;
   return n_solid + n_fluid;
 }
 
@@ -322,11 +338,13 @@ std::vector<double> SurrogateHeatDriver::temperature() const
   std::vector<double> local_temperatures;
 
   if (this->has_coupling_data()) {
-    for (gsl::index i = 0; i < n_pins_; ++i) {
-      for (gsl::index j = 0; j < n_axial_; ++j) {
-        for (gsl::index k = 0; k < n_rings(); ++k) {
-          for (gsl::index m = 0; m < n_azimuthal_; ++m) {
-            local_temperatures.push_back(solid_temperature_(i, j, k));
+    for (gsl::index a = 0; a < n_assem_; ++a){
+      for (gsl::index i = 0; i < n_pins_; ++i) {
+        for (gsl::index j = 0; j < n_axial_; ++j) {
+          for (gsl::index k = 0; k < n_rings(); ++k) {
+            for (gsl::index m = 0; m < n_azimuthal_; ++m) {
+              local_temperatures.push_back(solid_temperature_(a, i, j, k));
+            }
           }
         }
       }
@@ -346,7 +364,7 @@ std::vector<double> SurrogateHeatDriver::density() const
 
   if (this->has_coupling_data()) {
     // Solid region just gets zeros for densities (not used)
-    auto n = n_pins_ * n_axial_ * n_rings() * n_azimuthal_;
+    auto n = n_assem_ * n_pins_ * n_axial_ * n_rings() * n_azimuthal_;
     std::fill_n(std::back_inserter(local_densities), n, 0.0);
 
     // Add fluid densities and return
@@ -408,17 +426,18 @@ std::vector<double> SurrogateHeatDriver::volume() const
 
 int SurrogateHeatDriver::set_heat_source_at(int32_t local_elem, double heat)
 {
-  if (local_elem >= n_pins_ * n_axial_ * n_rings() * n_azimuthal_)
+  if (local_elem >= n_assem_ * n_pins_ * n_axial_ * n_rings() * n_azimuthal_)
     return 0;
 
   // Determine indices
+  gsl::index assem = 0; // need to determine what this should be
   gsl::index pin = local_elem / (n_axial_ * n_rings() * n_azimuthal_);
   gsl::index axial = (local_elem / (n_rings() * n_azimuthal_)) % n_axial_;
   gsl::index ring = (local_elem / n_azimuthal_) % n_rings();
   gsl::index azimuthal = local_elem % n_azimuthal_;
 
   // Set heat source
-  source_(pin, axial, ring, azimuthal) = heat;
+  source_(assem, pin, axial, ring, azimuthal) = heat;
   return 0;
 }
 
@@ -534,46 +553,50 @@ void SurrogateHeatDriver::solve_fluid()
 
   // compute temperature and density from enthalpy and pressure in a cell-centered
   // basis
-  xt::xtensor<double, 2> T({n_channels_, n_axial_});
-  xt::xtensor<double, 2> rho({n_channels_, n_axial_});
+  xt::xtensor<double, 3> T({n_assem_, n_channels_, n_axial_});
+  xt::xtensor<double, 3> rho({n_assem_, n_channels_, n_axial_});
 
-  for (gsl::index chan = 0; chan < n_channels_; ++chan) {
-    for (gsl::index axial = 0; axial < n_axial_; ++axial) {
-      double h_mean = 0.5 * (h(chan, axial) + h(chan, axial + 1));
-      double p_mean = 0.5 * (p(chan, axial) + p(chan, axial + 1));
+  for (gsl::index a = 0; a < n_assem_; ++a) {
+    for (gsl::index chan = 0; chan < n_channels_; ++chan) {
+      for (gsl::index axial = 0; axial < n_axial_; ++axial) {
+        double h_mean = 0.5 * (h(chan, axial) + h(chan, axial + 1));
+        double p_mean = 0.5 * (p(chan, axial) + p(chan, axial + 1));
 
-      T(chan, axial) = iapws::T_from_p_h(p_mean, h_mean);
-      rho(chan, axial) = iapws::rho_from_p_h(p_mean, h_mean);
-    }
-  }
-
-  // After solving the subchannel equations, convert the solution to a rod-centered
-  // basis, since this will most likely be the form desired by neutronics codes. At
-  // this point only do we apply the conversion of kg/m^3 to g/cm^3 assumed by the
-  // neutronics codes.
-  for (gsl::index rod = 0; rod < n_pins_; ++rod) {
-    for (gsl::index axial = 0; axial < n_axial_; ++axial) {
-      fluid_temperature_(rod, axial) = 0.0;
-      fluid_density_(rod, axial) = 0.0;
-
-      for (const auto& c : rods_[rod].channel_ids_) {
-        fluid_temperature_(rod, axial) += 0.25 * T(c, axial);
-
-        // factor of 1e-3 to convert from kg/m^3 to g/cm^3
-        fluid_density_(rod, axial) += 0.25 * rho(c, axial) * 1.0e-3;
+        T(a, chan, axial) = iapws::T_from_p_h(p_mean, h_mean);
+        rho(a, chan, axial) = iapws::rho_from_p_h(p_mean, h_mean);
       }
     }
   }
 
-  // Perform diagnostic checks if verbosity is sufficiently high
-  if (verbosity_ >= verbose::LOW) {
-    bool mass_conserved = is_mass_conserved(rho, u);
-    bool energy_conserved = is_energy_conserved(rho, u, h, channel_powers);
+    // After solving the subchannel equations, convert the solution to a rod-centered
+    // basis, since this will most likely be the form desired by neutronics codes. At
+    // this point only do we apply the conversion of kg/m^3 to g/cm^3 assumed by the
+    // neutronics codes.
+    for (gsl::index a = 0; a < n_assem_; ++a) {
+      for (gsl::index rod = 0; rod < n_pins_; ++rod) {
+        for (gsl::index axial = 0; axial < n_axial_; ++axial) {
+          fluid_temperature_(a, rod, axial) = 0.0;
+          fluid_density_(a, rod, axial) = 0.0;
 
-    Expects(mass_conserved);
-    Expects(energy_conserved);
+          for (const auto& c : rods_[rod].channel_ids_) {
+            fluid_temperature_(a, rod, axial) += 0.25 * T(c, axial);
+
+            // factor of 1e-3 to convert from kg/m^3 to g/cm^3
+            fluid_density_(a, rod, axial) += 0.25 * rho(c, axial) * 1.0e-3;
+          }
+        }
+      }
+    }
+
+    // Perform diagnostic checks if verbosity is sufficiently high
+    if (verbosity_ >= verbose::LOW) {
+      bool mass_conserved = is_mass_conserved(rho, u);
+      bool energy_conserved = is_energy_conserved(rho, u, h, channel_powers);
+
+      Expects(mass_conserved);
+      Expects(energy_conserved);
+    }
   }
-}
 
 bool SurrogateHeatDriver::is_mass_conserved(const xt::xtensor<double, 2>& rho,
                                             const xt::xtensor<double, 2>& u) const
@@ -645,42 +668,49 @@ void SurrogateHeatDriver::solve_heat()
   xt::xtensor<double, 1> r_fuel = 0.01 * r_grid_fuel_;
   xt::xtensor<double, 1> r_clad = 0.01 * r_grid_clad_;
 
-  for (gsl::index i = 0; i < n_pins_; ++i) {
-    for (gsl::index j = 0; j < n_axial_; ++j) {
-      // approximate cladding surface temperature as equal to the fluid
-      // temperature, i.e. this neglects any heat transfer resistance
-      double T_co = fluid_temperature_(i, j);
+  for (gsl::index a = 0; a < n_assem_; ++a){
+    for (gsl::index i = 0; i < n_pins_; ++i) {
+      for (gsl::index j = 0; j < n_axial_; ++j) {
+        // approximate cladding surface temperature as equal to the fluid
+        // temperature, i.e. this neglects any heat transfer resistance
+        double T_co = fluid_temperature_(a, i, j);
 
-      // Set initial temperature to surface temperature
-      xt::view(solid_temperature_, i, j) = T_co;
+        // Set initial temperature to surface temperature
+        xt::view(solid_temperature_, a, i, j) = T_co;
 
-      solve_steady_nonlin(&q(i, j, 0),
-                          T_co,
-                          r_fuel.data(),
-                          r_clad.data(),
-                          n_fuel_rings_,
-                          n_clad_rings_,
-                          heat_tol_,
-                          &solid_temperature_(i, j, 0));
+        solve_steady_nonlin(&q(i, j, 0),
+                            T_co,
+                            r_fuel.data(),
+                            r_clad.data(),
+                            n_fuel_rings_,
+                            n_clad_rings_,
+                            heat_tol_,
+                            &solid_temperature_(a, i, j, 0));
+      }
     }
   }
 }
 
-double SurrogateHeatDriver::solid_temperature(std::size_t pin,
+double SurrogateHeatDriver::solid_temperature(std::size_t assem,
+                                              std::size_t pin,
                                               std::size_t axial,
                                               std::size_t ring) const
 {
-  return solid_temperature_(pin, axial, ring);
+  return solid_temperature_(assem, pin, axial, ring);
 }
 
-double SurrogateHeatDriver::fluid_density(std::size_t pin, std::size_t axial) const
+double SurrogateHeatDriver::fluid_density(std::size_t assem,
+                                          std::size_t pin,
+                                          std::size_t axial) const
 {
-  return fluid_density_(pin, axial);
+  return fluid_density_(assem, pin, axial);
 }
 
-double SurrogateHeatDriver::fluid_temperature(std::size_t pin, std::size_t axial) const
+double SurrogateHeatDriver::fluid_temperature(std::size_t assem,
+                                              std::size_t pin,
+                                              std::size_t axial) const
 {
-  return fluid_temperature_(pin, axial);
+  return fluid_temperature_(assem, pin, axial);
 }
 
 void SurrogateHeatDriver::write_step(int timestep, int iteration)
