@@ -22,8 +22,8 @@ int ChannelFactory::index_ = 0;
 int RodFactory::index_ = 0;
 
 SurrogateHeatDriver::SurrogateHeatDriver(MPI_Comm comm, pugi::xml_node node)
-  : HeatFluidsDriver(comm, node)
-{
+  : HeatFluidsDriver(comm, node){
+
   // Determine thermal-hydraulic parameters for solid phase
   clad_inner_radius_ = node.child("clad_inner_radius").text().as_double();
   clad_outer_radius_ = node.child("clad_outer_radius").text().as_double();
@@ -36,6 +36,22 @@ SurrogateHeatDriver::SurrogateHeatDriver(MPI_Comm comm, pugi::xml_node node)
   n_solid_ = n_pins_ * n_axial_ * n_rings() * n_azimuthal_;
   n_fluid_ = n_pins_ * n_axial_;
   pin_pitch_ = node.child("pin_pitch").text().as_double();
+
+  // Determine assembly information
+  if (node.child("n_assem_x") || node.child("n_assem_y") ||
+      node.child("assembly_width_x") || node.child("assembly_width_y")) {
+    n_assem_x_ = node.child("n_assem_x").text().as_int();
+    n_assem_y_ = node.child("n_assem_y").text().as_int();
+    assembly_width_x_ = node.child("assembly_width_x").text().as_double();
+    assembly_width_y_ = node.child("assembly_width_y").text().as_double();
+  } else {
+    // assume 1 assembly, with pitch corresponding to the larger pin dimension
+    n_assem_x_ = 1;
+    n_assem_y_ = 1;
+    assembly_width_x_ = n_pins_x_ * pin_pitch_;
+    assembly_width_y_ = n_pins_y_ * pin_pitch_;
+  }
+  n_assem_ = n_assem_x_ * n_assem_y_;
 
   // Determine thermal-hydraulic parameters for fluid phase
   inlet_temperature_ = node.child("inlet_temperature").text().as_double();
@@ -82,15 +98,49 @@ SurrogateHeatDriver::SurrogateHeatDriver(MPI_Comm comm, pugi::xml_node node)
   Expects(subchannel_tol_h_ > 0.0);
   Expects(subchannel_tol_p_ > 0.0);
   Expects(heat_tol_ > 0.0);
+  Expects(n_assem_x_ > 0);
+  Expects(n_assem_y_ > 0);
+  Expects(assembly_width_x_ >= pin_pitch_ * n_pins_x_);
+  Expects(assembly_width_y_ >= pin_pitch_ * n_pins_y_);
 
+  // init vector of assembly surrogate drivers
+  for (gsl::index row = 0; row < n_assem_y_; ++row) {
+    for (gsl::index col = 0; col < n_assem_x_; ++col) {
+      assembly_drivers_.push_back(SurrogateHeatDriverAssembly(comm, node, col, row))
+    }
+  }
+}
+
+void SurrogateHeatDriver::solve_step()
+{
+  timer_solve_step.start();
+  // TODO - wrap this with index
+
+  if (has_coupling_data()) {
+    for (gsl::index row = 0; row < n_assem_y_; ++row) {
+      for (gsl::index col = 0; col < n_assem_x_; ++col) {
+        int assem_index = row * n_pins_x_ + col;
+        assembly_drivers_[assem_index].solve_fluid();
+        assembly_drivers_[assem_index].solve_heat();
+      }
+    }
+  }
+  timer_solve_step.stop();
+}
+
+SurrogateHeatDriverAssembly::SurrogateHeatDriverAssembly(
+  MPI_Comm comm, pugi::xml_node node, std::size_t assembly_x,
+  std::size_t assembly_y)
+  : SurrogateHeatDriver(comm, node)
+{
   // Set pin locations, where the center of the assembly is assumed to occur at
   // x = 0, y = 0. It is also assumed that the rod-boundary separation in the
   // x and y directions is the same and equal to half the pitch.
   // TODO: generalize to multi-assembly simulations
-  double assembly_width_x = n_pins_x_ * pin_pitch_;
-  double assembly_width_y = n_pins_y_ * pin_pitch_;
-  double top_left_x = -assembly_width_x / 2.0 + pin_pitch_ / 2.0;
-  double top_left_y = assembly_width_y / 2.0 - pin_pitch_ / 2.0;
+
+  // TODO - need to get proper locations based on assembly
+  double top_left_x = -assembly_width_x_ / 2.0 + pin_pitch_ / 2.0;
+  double top_left_y = assembly_width_y_ / 2.0 - pin_pitch_ / 2.0;
 
   pin_centers_.resize({n_pins_, 2});
   for (gsl::index row = 0; row < n_pins_y_; ++row) {
@@ -103,7 +153,6 @@ SurrogateHeatDriver::SurrogateHeatDriver(MPI_Comm comm, pugi::xml_node node)
 
   // Initialize the channels
   ChannelFactory channel_factory(pin_pitch_, clad_outer_radius_);
-
   for (std::size_t row = 0; row < n_pins_y_ + 1; ++row) {
     for (std::size_t col = 0; col < n_pins_x_ + 1; ++col) {
       std::size_t a = col / n_pins_x_;
@@ -181,7 +230,7 @@ SurrogateHeatDriver::SurrogateHeatDriver(MPI_Comm comm, pugi::xml_node node)
   generate_arrays();
 };
 
-void SurrogateHeatDriver::generate_arrays()
+void SurrogateHeatDriverAssembly::generate_arrays()
 {
   // Make a radial grid for the clad with equal spacing.
   r_grid_clad_ =
@@ -214,19 +263,19 @@ void SurrogateHeatDriver::generate_arrays()
   }
 }
 
-int SurrogateHeatDriver::n_local_elem() const
+int SurrogateHeatDriverAssembly::n_local_elem() const
 {
   return this->has_coupling_data() ? this->n_global_elem() : 0;
 }
 
-std::size_t SurrogateHeatDriver::n_global_elem() const
+std::size_t SurrogateHeatDriverAssembly::n_global_elem() const
 {
   auto n_solid = n_pins_ * n_axial_ * n_rings() * n_azimuthal_;
   auto n_fluid = n_pins_ * n_axial_;
   return n_solid + n_fluid;
 }
 
-std::vector<Position> SurrogateHeatDriver::centroid() const
+std::vector<Position> SurrogateHeatDriverAssembly::centroid() const
 {
   if (!this->has_coupling_data())
     return {};
@@ -289,7 +338,7 @@ std::vector<Position> SurrogateHeatDriver::centroid() const
   return centroids;
 }
 
-std::vector<double> SurrogateHeatDriver::temperature() const
+std::vector<double> SurrogateHeatDriverAssembly::temperature() const
 {
   std::vector<double> local_temperatures;
 
@@ -312,7 +361,7 @@ std::vector<double> SurrogateHeatDriver::temperature() const
   return local_temperatures;
 }
 
-std::vector<double> SurrogateHeatDriver::density() const
+std::vector<double> SurrogateHeatDriverAssembly::density() const
 {
   std::vector<double> local_densities;
 
@@ -329,12 +378,12 @@ std::vector<double> SurrogateHeatDriver::density() const
   return local_densities;
 }
 
-int SurrogateHeatDriver::in_fluid_at(int32_t local_elem) const
+int SurrogateHeatDriverAssembly::in_fluid_at(int32_t local_elem) const
 {
   return local_elem >= n_solid_;
 }
 
-std::vector<int> SurrogateHeatDriver::fluid_mask() const
+std::vector<int> SurrogateHeatDriverAssembly::fluid_mask() const
 {
   std::vector<int> fluid_mask;
 
@@ -347,7 +396,7 @@ std::vector<int> SurrogateHeatDriver::fluid_mask() const
   return fluid_mask;
 }
 
-std::vector<double> SurrogateHeatDriver::volume() const
+std::vector<double> SurrogateHeatDriverAssembly::volume() const
 {
   std::vector<double> volumes;
 
@@ -378,7 +427,7 @@ std::vector<double> SurrogateHeatDriver::volume() const
   return volumes;
 }
 
-int SurrogateHeatDriver::set_heat_source_at(int32_t local_elem, double heat)
+int SurrogateHeatDriverAssembly::set_heat_source_at(int32_t local_elem, double heat)
 {
   if (local_elem >= n_pins_ * n_axial_ * n_rings() * n_azimuthal_)
     return 0;
@@ -394,7 +443,8 @@ int SurrogateHeatDriver::set_heat_source_at(int32_t local_elem, double heat)
   return 0;
 }
 
-double SurrogateHeatDriver::rod_axial_node_power(const int pin, const int axial) const
+double SurrogateHeatDriverAssembly::rod_axial_node_power(const int pin,
+                                                         const int axial) const
 {
   Expects(axial < n_axial_);
 
@@ -410,17 +460,7 @@ double SurrogateHeatDriver::rod_axial_node_power(const int pin, const int axial)
   return power;
 }
 
-void SurrogateHeatDriver::solve_step()
-{
-  timer_solve_step.start();
-  if (has_coupling_data()) {
-    solve_fluid();
-    solve_heat();
-  }
-  timer_solve_step.stop();
-}
-
-void SurrogateHeatDriver::solve_fluid()
+void SurrogateHeatDriverAssembly::solve_fluid()
 {
   // determine the power deposition in each channel; the target applications will
   // always be steady-state or pseudo-steady-state cases with no axial conduction such
@@ -547,8 +587,8 @@ void SurrogateHeatDriver::solve_fluid()
   }
 }
 
-bool SurrogateHeatDriver::is_mass_conserved(const xt::xtensor<double, 2>& rho,
-                                            const xt::xtensor<double, 2>& u) const
+bool SurrogateHeatDriverAssembly::is_mass_conserved(const xt::xtensor<double, 2>& rho,
+                                                    const xt::xtensor<double, 2>& u) const
 {
   bool mass_conserved = true;
 
@@ -574,10 +614,11 @@ bool SurrogateHeatDriver::is_mass_conserved(const xt::xtensor<double, 2>& rho,
   return mass_conserved;
 }
 
-bool SurrogateHeatDriver::is_energy_conserved(const xt::xtensor<double, 2>& rho,
-                                              const xt::xtensor<double, 2>& u,
-                                              const xt::xtensor<double, 2>& h,
-                                              const xt::xtensor<double, 2>& q) const
+bool SurrogateHeatDriverAssembly::is_energy_conserved(
+  const xt::xtensor<double, 2>& rho,
+  const xt::xtensor<double, 2>& u,
+  const xt::xtensor<double, 2>& h,
+  const xt::xtensor<double, 2>& q) const
 {
   bool energy_conserved = true;
 
@@ -606,7 +647,7 @@ bool SurrogateHeatDriver::is_energy_conserved(const xt::xtensor<double, 2>& rho,
   return energy_conserved;
 }
 
-void SurrogateHeatDriver::solve_heat()
+void SurrogateHeatDriverAssembly::solve_heat()
 {
   comm_.message("Solving heat equation...");
 
@@ -638,19 +679,21 @@ void SurrogateHeatDriver::solve_heat()
   }
 }
 
-double SurrogateHeatDriver::solid_temperature(std::size_t pin,
-                                              std::size_t axial,
-                                              std::size_t ring) const
+double SurrogateHeatDriverAssembly::solid_temperature(std::size_t pin,
+                                                      std::size_t axial,
+                                                      std::size_t ring) const
 {
   return solid_temperature_(pin, axial, ring);
 }
 
-double SurrogateHeatDriver::fluid_density(std::size_t pin, std::size_t axial) const
+double SurrogateHeatDriverAssembly::fluid_density(std::size_t pin,
+                                                  std::size_t axial) const
 {
   return fluid_density_(pin, axial);
 }
 
-double SurrogateHeatDriver::fluid_temperature(std::size_t pin, std::size_t axial) const
+double SurrogateHeatDriverAssembly::fluid_temperature(std::size_t pin,
+                                                      std::size_t axial) const
 {
   return fluid_temperature_(pin, axial);
 }

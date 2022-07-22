@@ -151,6 +151,7 @@ private:
  * equation is solved for pressure (the mass flow rate in each channel being
  * fixed) while neglecting friction effects.
  */
+
 class SurrogateHeatDriver : public HeatFluidsDriver {
 public:
   //! Initializes heat-fluids surrogate with the given MPI communicator.
@@ -159,34 +160,13 @@ public:
   //! \param node  XML node containing settings for surrogate
   SurrogateHeatDriver(MPI_Comm comm, pugi::xml_node node);
 
+  //!< Assembly drivers
+  std::vector<SurrogateHeatDriverAssembly> assembly_drivers_;
+
   //! Verbosity options for printing simulation results
   enum class verbose { NONE, LOW, HIGH };
 
   bool has_coupling_data() const final { return comm_.rank == 0; }
-
-  //! Get the number of local mesh elements
-  //! \return Number of local mesh elements
-  int n_local_elem() const override;
-
-  //! Get the number of global mesh elements
-  //! \return Number of global mesh elements
-  std::size_t n_global_elem() const override;
-
-  int in_fluid_at(int32_t local_elem) const override;
-
-  //! Set the heat source for a given local element
-  //!
-  //! \param local_elem A local element ID
-  //! \param heat A heat source term
-  //! \return Error code
-  int set_heat_source_at(int32_t local_elem, double heat) override;
-
-  //! Solves the heat-fluids surrogate solver
-  void solve_step() final;
-
-  void solve_heat();
-
-  void solve_fluid();
 
   //! Returns Number of rings in fuel and clad
   std::size_t n_rings() const { return n_fuel_rings_ + n_clad_rings_; }
@@ -239,8 +219,121 @@ public:
   //! Returns convergence tolerance for solid energy equation
   double heat_tol() const { return heat_tol_; }
 
+  // Data on fuel pins
+  xt::xtensor<double, 1> z_;           //!< Bounding z-values for axial segments
+  std::size_t n_axial_;                //!< number of axial segments
+  std::size_t n_azimuthal_{4};         //!< number of azimuthal segments
+
+  //! Total number of pins per assembly
+  std::size_t n_pins_;
+
+  // total number of assemblies
+  std::size_t n_assem_;
+
+  // Dimensions for a single fuel pin axial segment
+  double clad_outer_radius_;     //!< clad outer radius in [cm]
+  double clad_inner_radius_;     //!< clad inner radius in [cm]
+  double pellet_radius_;         //!< fuel pellet radius in [cm]
+  std::size_t n_fuel_rings_{20}; //!< number of fuel rings
+  std::size_t n_clad_rings_{2};  //!< number of clad rings
+
+  //! Number of pins in the x-direction in a Cartesian grid
+  std::size_t n_pins_x_;
+
+  //! Number of pins in the y-direction in a Cartesian grid
+  std::size_t n_pins_y_;
+
+  //! Pin pitch, assumed the same for the x and y directions
+  double pin_pitch_;
+
+  //! Number of assemblies in the x-direction in a Cartesian grid
+  std::size_t n_assem_x_;
+
+  //! Number of assemblies in the y-direction in a Cartesian grid
+  std::size_t n_assem_y_;
+
+  //! Assembly dimensions
+  double assembly_width_x_;
+  double assembly_width_y_;
+
+  //! Inlet fluid temperature [K]
+  double inlet_temperature_;
+
+  //! Mass flowrate of fluid into the domain [kg/s]
+  double mass_flowrate_;
+
+  //! Number of channels
+  std::size_t n_channels_;
+
+  //! Maximum number of iterations for subchannel solution, set to a default value
+  //! of 100 if not set by the user
+  int max_subchannel_its_ = 100;
+
+  //! Convergence tolerance on enthalpy for the subchannel solution for use in
+  //! convergence based on the L-1 norm, set to a default value of 1e-2
+  double subchannel_tol_h_ = 1e-2;
+
+  //! Convergence tolerance on pressure for the subchannel solution for use in
+  //! convergence based on the L-1 norm, set to a default value of 1e-2
+  double subchannel_tol_p_ = 1e-2;
+
+  //! Convergence tolerance for solid temperature solution, set to a default value
+  //! of 1e-4
+  double heat_tol_ = 1e-4;
+
+  //! Gravitational acceleration
+  const double g_ = 9.81;
+
+  //! Verbosity setting for printing simulation results; defaults to NONE
+  verbose verbosity_ = verbose::NONE;
+
+  //! Solves the heat-fluids surrogate solver
+  void solve_step() final;
+
+  // visualization
+  std::string viz_basename_{
+    "heat_surrogate"}; //!< base filename for visualization files (default: magnolia)
+  std::string viz_iterations_{
+    "none"};                    //!< visualization iterations to write (none, all, final)
+  std::string viz_data_{"all"}; //!< visualization data to write
+  std::string viz_regions_{"all"}; //!< visualization regions to write
+  size_t vtk_radial_res_{20};      //!< radial resolution of resulting vtk files
+
   //! Write data to VTK
   void write_step(int timestep, int iteration) final;
+}
+class SurrogateHeatDriverAssembly : public SurrogateHeatDriver {
+public:
+  //! Initializes heat-fluids surrogate for an assembly
+  //!
+  //! \param assembly_x  x index of assembly
+  //! \param assembly_y  y index of assembly
+  SurrogateHeatDriverAssembly(MPI_Comm comm,
+                              pugi::xml_node node, std::size_t assembly_x,
+                              std::size_t assembly_y);
+
+  //! Get the number of local mesh elements
+  //! \return Number of local mesh elements
+  int n_local_elem() const override;
+
+  //! Get the number of global mesh elements
+  //! \return Number of global mesh elements
+  std::size_t n_global_elem() const override;
+
+  int in_fluid_at(int32_t local_elem) const override;
+
+  //! Set the heat source for a given local element
+  //!
+  //! \param local_elem A local element ID
+  //! \param heat A heat source term
+  //! \return Error code
+  int set_heat_source_at(int32_t local_elem, double heat) override;
+
+  void solve_heat();
+
+  void solve_fluid();
+
+
 
   //! Returns solid temperature in [K] for given region
   double solid_temperature(std::size_t pin, std::size_t axial, std::size_t ring) const;
@@ -253,19 +346,6 @@ public:
 
   // Data on fuel pins
   xt::xtensor<double, 2> pin_centers_; //!< (x,y) values for center of fuel pins
-  xt::xtensor<double, 1> z_;           //!< Bounding z-values for axial segments
-  std::size_t n_axial_;                //!< number of axial segments
-  std::size_t n_azimuthal_{4};         //!< number of azimuthal segments
-
-  //! Total number of pins
-  std::size_t n_pins_;
-
-  // Dimensions for a single fuel pin axial segment
-  double clad_outer_radius_;     //!< clad outer radius in [cm]
-  double clad_inner_radius_;     //!< clad inner radius in [cm]
-  double pellet_radius_;         //!< fuel pellet radius in [cm]
-  std::size_t n_fuel_rings_{20}; //!< number of fuel rings
-  std::size_t n_clad_rings_{2};  //!< number of clad rings
 
   //!< Channels in the domain
   std::vector<Channel> channels_;
@@ -285,15 +365,6 @@ public:
 
   //! Cross-sectional areas of rings in fuel and cladding
   xt::xtensor<double, 1> solid_areas_;
-
-  // visualization
-  std::string viz_basename_{
-    "heat_surrogate"}; //!< base filename for visualization files (default: magnolia)
-  std::string viz_iterations_{
-    "none"};                    //!< visualization iterations to write (none, all, final)
-  std::string viz_data_{"all"}; //!< visualization data to write
-  std::string viz_regions_{"all"}; //!< visualization regions to write
-  size_t vtk_radial_res_{20};      //!< radial resolution of resulting vtk files
 
 private:
   //! Get temperature of local mesh elements
@@ -359,47 +430,6 @@ private:
 
   //! Fluid density in [g/cm^3] in a rod-centered basis indexed by rod ID and axial ID
   xt::xtensor<double, 2> fluid_density_;
-
-  //! Number of pins in the x-direction in a Cartesian grid
-  std::size_t n_pins_x_;
-
-  //! Number of pins in the y-direction in a Cartesian grid
-  std::size_t n_pins_y_;
-
-  //! Pin pitch, assumed the same for the x and y directions
-  double pin_pitch_;
-
-  //! Inlet fluid temperature [K]
-  double inlet_temperature_;
-
-  //! Mass flowrate of fluid into the domain [kg/s]
-  double mass_flowrate_;
-
-  //! Number of channels
-  std::size_t n_channels_;
-
-  //! Maximum number of iterations for subchannel solution, set to a default value
-  //! of 100 if not set by the user
-  int max_subchannel_its_ = 100;
-
-  //! Convergence tolerance on enthalpy for the subchannel solution for use in
-  //! convergence based on the L-1 norm, set to a default value of 1e-2
-  double subchannel_tol_h_ = 1e-2;
-
-  //! Convergence tolerance on pressure for the subchannel solution for use in
-  //! convergence based on the L-1 norm, set to a default value of 1e-2
-  double subchannel_tol_p_ = 1e-2;
-
-  //! Convergence tolerance for solid temperature solution, set to a default value
-  //! of 1e-4
-  double heat_tol_ = 1e-4;
-
-  //! Gravitational acceleration
-  const double g_ = 9.81;
-
-  //! Verbosity setting for printing simulation results; defaults to NONE
-  verbose verbosity_ = verbose::NONE;
-
 }; // end SurrogateHeatDriver
 
 } // namespace enrico
